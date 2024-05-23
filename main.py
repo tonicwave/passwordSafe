@@ -4,29 +4,35 @@
 # passwordSafe
 # version 0.1
 
-import random
-import time
 import datetime
 import pickle
+import pyotp
+import time
+
+
+from cryptography.fernet import Fernet
 
 # global strings
 LOOKUP_PROMPT = "Enter the nickname of the account to update: "
+DISPLAY_PROMPT = "Enter the nickname of the account to display: "
 USERNAME_PROMPT = "Enter a username []: "
 PASSWORD_PROMPT = "Enter a password []: "
+SEED_PROMPT = "Enter a seed []: "
 NICKNAME_PROMPT = "Enter a nickname for this account (e.g. OSU): "
 WEBSITE_PROMPT = "Enter a website for this account []: "
 NOTES_PROMPT = "Enter your notes about this account []: "
 NOT_FOUND_PROMPT = "\nSorry. No such account found with that nickname.\n"
 CREDENTIALS_SAVED = "\nCredentials saved.\n"
 NOTE_SAVED = "\nNote saved.\n"
-MENU_PROMPT = "New (n)\nUpdate (u)\nAdd Note (a)\nQuit (q)\nHelp (h)\n\t\tpSafe>   "
+MENU_PROMPT = "New (n)\nUpdate (u)\nSeed (s)\nDisplay (d)\nAdd Note (a)\nQuit (q)\nHelp (h)\n\t\tpSafe>   "
 
 
 class Credentials:
-    def __init__(self, nickname=None, username=None, password=None, website=None):
+    def __init__(self, nickname=None, username=None, password=None, seed=None, website=None):
         self.nickname = nickname
         self.username = username
         self.password = password
+        self.totp = None
         self.website = website
         self.notes = None
         self.username_history = {}
@@ -58,6 +64,21 @@ class Credentials:
     def get_password(self):
         return self.password
 
+    def seed_totp(self, new_seed):
+        if new_seed is not None:
+            return pyotp.TOTP(new_seed)
+        return None
+
+    def set_totp(self, new_seed):
+        self.totp = self.seed_totp(new_seed)
+
+    def get_totp(self):
+        try:
+            if self.totp is not None:
+                return self.totp.now()
+        except AttributeError:
+            pass
+
     def print_password_history(self):
         for key, value in self.password_history.items().__reversed__():
             print(f'{key}: {value}')
@@ -73,8 +94,11 @@ class Credentials:
         for key, value in self.website_history.items().__reversed__():
             print(f'{key}: {value}')
 
+
+
+
     def get_current_credentials(self):
-        return self.website, self.username, self.password
+        return self.nickname, self.website, self.username, self.password, self.get_totp()
 
     def add_note(self, new_note):
         self.notes = new_note
@@ -89,16 +113,20 @@ class PasswordSafe:
     def __init__(self, safe_file_name=None):
         self.credentials = {}
         self.safe_file_name = safe_file_name
+        self.key = self.load_key('my_secret.key')
         if self.safe_file_name is not None:
             self.read_safe()
 
     def add_credential(self, new_credential):
         self.credentials[new_credential.get_nickname().lower()] = new_credential
 
+    def print_credential(self, creds):
+        (cur_nick, cur_web, cur_name, cur_pwd, cur_totp) = creds.get_current_credentials()
+        print(f'{cur_nick}: {cur_web} {cur_name} {cur_pwd} {cur_totp}')
+
     def print_all_credentials(self):
         for key, value in self.credentials.items():
-            (cur_web, cur_name, cur_pwd) = value.get_current_credentials()
-            print(f'{key}: {cur_web} {cur_name} {cur_pwd}')
+            self.print_credential(value)
 
     def delete_credential(self, existing_credential):
         try:
@@ -108,18 +136,43 @@ class PasswordSafe:
 
     def save_safe(self):
         if self.safe_file_name is not None:
-            with open(self.safe_file_name, 'wb') as safe_file:
-                pickle.dump(self.credentials, safe_file)
+            self.save_pickle(self.credentials, self.safe_file_name)
 
     def read_safe(self):
-        with open(self.safe_file_name, 'rb') as safe_file:
-            self.credentials = pickle.load(safe_file)
+        try:
+            with open(self.safe_file_name, 'rb') as safe_file:
+                self.credentials = self.load_pickle(self.safe_file_name)
+        except FileNotFoundError:
+            print("No safe found. Starting new!")
 
     def lookup_by_nickname(self, nick_name):
         try:
             return self.credentials[nick_name.lower()]
         except KeyError:
             return None
+
+    def make_key(self, key_file=None):
+        with open(key_file, 'wb') as f:
+            f.write(Fernet.generate_key())
+        return key_file
+
+    def load_key(self, fp: str = None):
+        if fp is None:
+            fp = self.make_key('my_secret.key')
+        with open(fp, 'rb') as f:
+            return f.read()
+
+    def load_pickle(self, fp: str) -> object:
+        fernet = Fernet(self.key)
+        with open(fp, 'rb') as f:
+            if f is None:
+                return None
+            return pickle.loads(fernet.decrypt(f.read()))
+
+    def save_pickle(self, obj: object, fp: str):
+        fernet = Fernet(self.key)
+        with open(fp, 'wb') as f:
+            f.write(fernet.encrypt(pickle.dumps(obj)))
 
 
 class SafeTextUI:
@@ -146,6 +199,8 @@ class SafeTextUI:
         print('OPTIONS')
         print('\tType "new" to enter a new set of credentials (shortcut: n)')
         print('\tType "update" to save a password to an existing set of credentials (shortcut: u)')
+        print('\tType "display" to show a set of credentials (shortcut: d)')
+        print('\tType "seed" to add a TOTP to existing credentials (shortcut: s)')
         print('\tType "add" to add a a not to an existing set of credentials (shortcut: a)')
         print('\tType "quit" to exit (shortcut: q)')
         print('\tType "help" to see the passwordSafe documentation (shortcuts: h or ?)\n')
@@ -162,7 +217,7 @@ class SafeTextUI:
               'your numeric account number. You can Add a note (a) that includes such details.\n\t')
 
     def store_new_password(self):
-        credential = self.lookup_account()
+        credential = self.lookup_account(LOOKUP_PROMPT)
         if credential is None:
             print(NOT_FOUND_PROMPT)
         else:
@@ -171,9 +226,18 @@ class SafeTextUI:
             self.passwordSafe.add_credential(credential)
             print(CREDENTIALS_SAVED)
 
-    def lookup_account(self):
-        nickname = self.read_input(LOOKUP_PROMPT)
+    def lookup_account(self, prompt):
+        nickname = self.read_input(prompt)
         return self.passwordSafe.lookup_by_nickname(nickname)
+
+    def display_credential(self):
+        creds = self.lookup_account(DISPLAY_PROMPT)
+        if creds is None:
+            print(NOT_FOUND_PROMPT)
+        else:
+            print('\nNICKNAME WEBSITE  USERNAME\t\t\tPASSWORD ONE-TIME PASSWORD')
+            self.passwordSafe.print_credential(creds)
+            print('\n')
 
     def store_new_credentials(self):
         self.passwordSafe.add_credential(Credentials(self.read_input(NICKNAME_PROMPT),
@@ -182,8 +246,18 @@ class SafeTextUI:
                                                      self.read_input(WEBSITE_PROMPT)))
         print(CREDENTIALS_SAVED)
 
+    def store_new_totp_seed(self):
+        credential = self.lookup_account(LOOKUP_PROMPT)
+        if credential is None:
+            print(NOT_FOUND_PROMPT)
+        else:
+            new_seed = self.read_input(SEED_PROMPT)
+            credential.set_totp(new_seed)
+            self.passwordSafe.add_credential(credential)
+            print(CREDENTIALS_SAVED)
+
     def add_notes(self):
-        credential = self.lookup_account()
+        credential = self.lookup_account(NOTES_PROMPT)
         if credential is None:
             print(NOT_FOUND_PROMPT)
         else:
@@ -209,10 +283,14 @@ class SafeTextUI:
     def process_user_command(self, user_input):
         if user_input == 'u' or user_input == 'update':
             self.store_new_password()
+        if user_input == 's' or user_input == 'seed':
+            self.store_new_totp_seed()
         elif user_input == 'n' or user_input == 'new':
             self.store_new_credentials()
         elif user_input == 'a' or user_input == 'add':
             self.add_notes()
+        elif user_input == 'd' or user_input == 'display':
+            self.display_credential()
         elif user_input == 'h' or user_input == '?' or user_input == 'help':
             self.print_help()
 
