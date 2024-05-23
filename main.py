@@ -13,6 +13,7 @@ import time
 from cryptography.fernet import Fernet
 
 # global strings
+MASTER_PASSWORD_PROMPT = "Enter Master Password: "
 LOOKUP_PROMPT = "Enter the nickname of the account to update: "
 DISPLAY_PROMPT = "Enter the nickname of the account to display: "
 USERNAME_PROMPT = "Enter a username []: "
@@ -24,8 +25,10 @@ NOTES_PROMPT = "Enter your notes about this account []: "
 NOT_FOUND_PROMPT = "\nSorry. No such account found with that nickname.\n"
 CREDENTIALS_SAVED = "\nCredentials saved.\n"
 NOTE_SAVED = "\nNote saved.\n"
-MENU_PROMPT = "New (n)\nUpdate (u)\nSeed (s)\nDisplay (d)\nAdd Note (a)\nQuit (q)\nHelp (h)\n\t\tpSafe>   "
+MENU_PROMPT = "New (n)\nUpdate (u)\nSeed (s)\nDisplay (d)\nAdd Note (a)\nQuit (q)\nHelp (h)\n\t\tpSafe>  "
 
+KEY_FILENAME = 'my_secret.key'
+SAFE_FILENAME = 'safe.dat'
 
 class Credentials:
     def __init__(self, nickname=None, username=None, password=None, seed=None, website=None):
@@ -113,16 +116,31 @@ class PasswordSafe:
     def __init__(self, safe_file_name=None):
         self.credentials = {}
         self.safe_file_name = safe_file_name
-        self.key = self.load_key('my_secret.key')
-        if self.safe_file_name is not None:
-            self.read_safe()
+        self.key = None
+        self.locked = True
+
+    def unlock_safe(self, master_password):
+        """ unlocks safe and returns true if password is valid, otherwise not and false """
+        if self.check_master_password(master_password):
+            self.key = self.load_key(KEY_FILENAME)
+            if self.safe_file_name is not None:
+                self.read_safe()
+                self.locked = False
+                return True
+        return False
+
+    def check_master_password(self, master_password):
+        is_valid = False
+        if master_password == "asdf":
+            is_valid = True
+        return is_valid
 
     def add_credential(self, new_credential):
         self.credentials[new_credential.get_nickname().lower()] = new_credential
 
     def print_credential(self, creds):
         (cur_nick, cur_web, cur_name, cur_pwd, cur_totp) = creds.get_current_credentials()
-        print(f'{cur_nick}: {cur_web} {cur_name} {cur_pwd} {cur_totp}')
+        print(f'{cur_nick}\t\t{cur_web}\t{cur_name}\t\t{cur_pwd}\t{cur_totp}')
 
     def print_all_credentials(self):
         for key, value in self.credentials.items():
@@ -158,7 +176,7 @@ class PasswordSafe:
 
     def load_key(self, fp: str = None):
         if fp is None:
-            fp = self.make_key('my_secret.key')
+            fp = self.make_key(KEY_FILENAME)
         with open(fp, 'rb') as f:
             return f.read()
 
@@ -189,6 +207,10 @@ class SafeTextUI:
             print('No such credential found.')
 
     def print_initial_screen(self):
+        while safe.locked:
+            print("\nPassword Safe is locked. Enter Master Password to unlock")
+            master_password = self.read_input(MASTER_PASSWORD_PROMPT)
+            safe.unlock_safe(master_password)
         print('\n\nWelcome to passwordSafe!\npasswordSafe lets you store all your passwords in one secure place\n'
               '\nNOTE: Your passwords are stored locally on your \n\t'
               'computer and will take up space and are subject\n\t'
@@ -235,7 +257,7 @@ class SafeTextUI:
         if creds is None:
             print(NOT_FOUND_PROMPT)
         else:
-            print('\nNICKNAME WEBSITE  USERNAME\t\t\tPASSWORD ONE-TIME PASSWORD')
+            print('\nNICKNAME\tWEBSITE\t\tUSERNAME\t\t\tPASSWORD\tONE-TIME PASSWORD')
             self.passwordSafe.print_credential(creds)
             print('\n')
 
@@ -271,8 +293,8 @@ class SafeTextUI:
         return input(prompt).strip()
 
     def command_loop(self):
+        self.print_menu()
         while True:
-            self.print_menu()
             user_input = self.read_input(MENU_PROMPT).lower()
             if user_input == 'q' or user_input == 'quit':
                 break
@@ -296,6 +318,6 @@ class SafeTextUI:
 
 
 if __name__ == '__main__':
-    safe = PasswordSafe("safe.dat")
+    safe = PasswordSafe(SAFE_FILENAME)
     ui = SafeTextUI(safe)
     safe.print_all_credentials()
