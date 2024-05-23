@@ -30,6 +30,7 @@ MENU_PROMPT = "New (n)\nUpdate (u)\nSeed (s)\nDisplay (d)\nAdd Note (a)\nQuit (q
 KEY_FILENAME = 'my_secret.key'
 SAFE_FILENAME = 'safe.dat'
 
+
 class Credentials:
     def __init__(self, nickname=None, username=None, password=None, seed=None, website=None):
         self.nickname = nickname
@@ -126,8 +127,6 @@ class PasswordSafe:
             if self.safe_file_name is not None:
                 self.read_safe()
                 self.locked = False
-                return True
-        return False
 
     def check_master_password(self, master_password):
         is_valid = False
