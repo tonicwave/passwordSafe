@@ -8,9 +8,18 @@ import datetime
 import pickle
 import pyotp
 import time
-
-
+from redis_api import RedApi
+import logging
 from cryptography.fernet import Fernet
+import json
+
+# global logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.ERROR)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 # global strings
 MASTER_PASSWORD_PROMPT = "Enter Master Password: "
@@ -77,11 +86,8 @@ class Credentials:
         self.totp = self.seed_totp(new_seed)
 
     def get_totp(self):
-        try:
-            if self.totp is not None:
-                return self.totp.now()
-        except AttributeError:
-            pass
+        totp = TotpRequestor()
+        return totp.get_totp(self.username, self.nickname)
 
     def print_password_history(self):
         for key, value in self.password_history.items().__reversed__():
@@ -97,9 +103,6 @@ class Credentials:
     def print_website_history(self):
         for key, value in self.website_history.items().__reversed__():
             print(f'{key}: {value}')
-
-
-
 
     def get_current_credentials(self):
         return self.nickname, self.website, self.username, self.password, self.get_totp()
@@ -129,10 +132,8 @@ class PasswordSafe:
                 self.locked = False
 
     def check_master_password(self, master_password):
-        is_valid = False
-        if master_password == "asdf":
-            is_valid = True
-        return is_valid
+        auth = Authenticator()
+        return auth.authenticate("alice", master_password)
 
     def add_credential(self, new_credential):
         self.credentials[new_credential.get_nickname().lower()] = new_credential
@@ -314,6 +315,101 @@ class SafeTextUI:
             self.display_credential()
         elif user_input == 'h' or user_input == '?' or user_input == 'help':
             self.print_help()
+
+
+class RedisQue():
+    def __init__(self):
+        self.r = RedApi()
+
+    def fetch_response(self, queue_name) -> str:
+        """Fetch the response from the queue, if there is one"""
+        while True:
+            resp = self.r.dequeue(queue_name)
+            if resp:
+                logger.debug(f"{queue_name} response fetched")
+                return resp
+            else:
+                logger.debug(f"waiting for {queue_name} response...")
+
+
+class TotpRequestor(RedisQue):
+    def __init__(self):
+        super().__init__()
+        self.totp_request_queue_name = "totp_request_queue"
+        self.totp_response_queue_name = "totp_response_queue"
+
+    def enqueue_totp_request(self, username: str, nickname: str) -> bool:
+        """Send a username and password to the queue
+
+        look for a response of true if the request gets queued successfully
+
+        message should be in the form:
+        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        """
+
+        query = {"username": username, "nickname": nickname}
+        self.r.enqueue(self.totp_request_queue_name, query)
+        if self.r.enqueue:
+            logger.info("TOTP request sent")
+            return True
+        else:
+            logger.error("TOTP request failed")
+            return False
+
+    def totp_response(self):
+        return super().fetch_response(self.totp_response_queue_name)
+
+    def get_totp(self, username, nickname):
+        result = -1
+        req = self.enqueue_totp_request(username, nickname)
+        if req:
+            logger.debug("TOTP response waiting...")
+            response = json.loads(self.totp_response())
+            logger.debug(response)
+            result = response[nickname]
+        else:
+            logger.error("Request failed")
+        return result
+
+
+class Authenticator(RedisQue):
+    def __init__(self):
+        super().__init__()
+        self.auth_request_queue_name = "auth_request_queue"
+        self.auth_response_queue_name = "auth_response_queue"
+
+    def enqueue_auth_request(self, username: str, password: str) -> bool:
+        """Send a username and password to the queue
+
+        look for a response of true if the request gets queued successfully
+
+        message should be in the form:
+        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        """
+
+        query = {"username": username, "password": password}
+        self.r.enqueue(self.auth_request_queue_name, query)
+        if self.r.enqueue:
+            logger.debug("Authentication request sent")
+            return True
+        else:
+            logger.debug("Authentication request failed")
+            return False
+
+    def auth_response(self):
+        return super().fetch_response(self.auth_response_queue_name)
+
+    def authenticate(self, username, password):
+        result = False
+        req = self.enqueue_auth_request(username, password)
+        if req:
+            logger.debug("Authentication response waiting...")
+            response = self.auth_response()
+            logger.debug(response)
+            result = response.find("True")
+        else:
+            logger.error("Request failed")
+        return result != -1
 
 
 if __name__ == '__main__':
