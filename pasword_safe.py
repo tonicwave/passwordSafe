@@ -38,6 +38,7 @@ MENU_PROMPT = "New (n)\nUpdate (u)\nSeed (s)\nDisplay (d)\nAdd Note (a)\nQuit (q
 
 KEY_FILENAME = 'my_secret.key'
 SAFE_FILENAME = 'safe.dat'
+PASSWORD_KEY = "n5_lbuaAWGhe9gdv7MA5n0ZDhpZaDUtiuoHiZYXhxa0="
 
 
 class Credentials:
@@ -70,12 +71,16 @@ class Credentials:
         for key, value in self.username_history.items().__reversed__():
             print(f'{key}: {value}')
 
-    def set_password(self, new_password):
-        self.password = new_password
+    def set_password(self, key, new_password):
+        encryptor = Encryptor()
+        enc_password = encryptor.encrypt(key, new_password)
+        self.password = enc_password
         self.password_history[datetime.datetime.now()] = self.password
 
-    def get_password(self):
-        return self.password
+    def get_password(self, password_key):
+        decryptor = Decryptor()
+        dec_password = decryptor.decrypt(password_key, self.password)
+        return dec_password
 
     def seed_totp(self, new_seed):
         if new_seed is not None:
@@ -104,8 +109,13 @@ class Credentials:
         for key, value in self.website_history.items().__reversed__():
             print(f'{key}: {value}')
 
-    def get_current_credentials(self):
-        return self.nickname, self.website, self.username, self.password, self.get_totp()
+    def get_current_credentials(self, password_key):
+        decryptor = Decryptor()
+
+        return (self.nickname, self.website, self.username,
+                decryptor.decrypt(password_key, self.password),
+                #self.password,
+                self.get_totp())
 
     def add_note(self, new_note):
         self.notes = new_note
@@ -117,11 +127,12 @@ class Credentials:
 
 
 class PasswordSafe:
-    def __init__(self, safe_file_name=None):
+    def __init__(self, safe_file_name=None, password_key=None):
         self.credentials = {}
         self.safe_file_name = safe_file_name
         self.key = None
         self.locked = True
+        self.password_key = password_key
 
     def unlock_safe(self, master_password):
         """ unlocks safe and returns true if password is valid, otherwise not and false """
@@ -139,8 +150,8 @@ class PasswordSafe:
         self.credentials[new_credential.get_nickname().lower()] = new_credential
 
     def print_credential(self, creds):
-        (cur_nick, cur_web, cur_name, cur_pwd, cur_totp) = creds.get_current_credentials()
-        print(f'{cur_nick}\t\t{cur_web}\t{cur_name}\t\t{cur_pwd}\t{cur_totp}')
+        (cur_nick, cur_web, cur_name, cur_pwd, cur_totp) = creds.get_current_credentials(self.password_key)
+        print(f'{cur_nick:12}{cur_web:16}\t{cur_name:20}{cur_pwd:20}{cur_totp:6}')
 
     def print_all_credentials(self):
         for key, value in self.credentials.items():
@@ -244,7 +255,7 @@ class SafeTextUI:
             print(NOT_FOUND_PROMPT)
         else:
             new_password = self.read_input(PASSWORD_PROMPT)
-            credential.set_password(new_password)
+            credential.set_password(self.passwordSafe.password_key, new_password)
             self.passwordSafe.add_credential(credential)
             print(CREDENTIALS_SAVED)
 
@@ -257,7 +268,7 @@ class SafeTextUI:
         if creds is None:
             print(NOT_FOUND_PROMPT)
         else:
-            print('\nNICKNAME\tWEBSITE\t\tUSERNAME\t\t\tPASSWORD\tONE-TIME PASSWORD')
+            print('\nNICKNAME\tWEBSITE\t\t\t\tUSERNAME\t\t\tPASSWORD\t\tONE-TIME PASSWORD')
             self.passwordSafe.print_credential(creds)
             print('\n')
 
@@ -321,7 +332,7 @@ class RedisQue():
     def __init__(self):
         self.r = RedApi()
 
-    def fetch_response(self, queue_name) -> str:
+    def fetch_response(self, queue_name) -> dict:
         """Fetch the response from the queue, if there is one"""
         while True:
             resp = self.r.dequeue(queue_name)
@@ -375,8 +386,8 @@ class TotpRequestor(RedisQue):
 class Authenticator(RedisQue):
     def __init__(self):
         super().__init__()
-        self.auth_request_queue_name = "auth_request_queue"
-        self.auth_response_queue_name = "auth_response_queue"
+        self.auth_request_queue_name = "request_queue"
+        self.auth_response_queue_name = "response_queue"
 
     def enqueue_auth_request(self, username: str, password: str) -> bool:
         """Send a username and password to the queue
@@ -408,11 +419,94 @@ class Authenticator(RedisQue):
             logger.debug(response)
             result = response.find("True")
         else:
-            logger.error("Request failed")
+            logger.error("Authentication request failed")
         return result != -1
 
 
+class Decryptor(RedisQue):
+    def __init__(self):
+        super().__init__()
+        self.decrypt_request_queue_name = "decrypt_request_queue"
+        self.decrypt_response_queue_name = "decrypt_response_queue"
+        self.result_field = "plaintext"
+
+    def enqueue_decrypt_request(self, key: str, ciphertext: str) -> bool:
+        """Send a username and password to the queue
+
+        look for a response of true if the request gets queued successfully
+
+        message should be in the form:
+        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        """
+
+        query = {"key": key, "ciphertext": ciphertext}
+        self.r.enqueue(self.decrypt_request_queue_name, query)
+        if self.r.enqueue:
+            logger.info("decrypt request sent")
+            return True
+        else:
+            logger.error("decrypt request failed")
+            return False
+
+    def decrypt_response(self) -> dict:
+        return super().fetch_response(self.decrypt_response_queue_name)
+
+    def decrypt(self, key, ciphertext):
+        result = False
+        req = self.enqueue_decrypt_request(key, ciphertext)
+        if req:
+            logger.debug("Decryption response waiting...")
+            response = json.loads(self.decrypt_response())
+            logger.debug(response)
+
+            result = response[self.result_field]
+        else:
+            logger.error("Decryption request failed")
+        return result
+
+
+class Encryptor(RedisQue):
+    def __init__(self):
+        super().__init__()
+        self.encrypt_request_queue_name = "encrypt_request_queue"
+        self.encrypt_response_queue_name = "encrypt_response_queue"
+        self.result_field = "ciphertext"
+
+    def enqueue_encrypt_request(self, key: str, plaintext: str) -> bool:
+        """Send a username and password to the queue
+
+        look for a response of true if the request gets queued successfully
+
+        message should be in the form:
+        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        """
+
+        query = {"key": key, "plaintext": plaintext}
+        self.r.enqueue(self.encrypt_request_queue_name, query)
+        if self.r.enqueue:
+            logger.info("encrypt request sent")
+            return True
+        else:
+            logger.error("encrypt request failed")
+            return False
+
+    def encrypt_response(self) -> dict:
+        return super().fetch_response(self.encrypt_response_queue_name)
+
+    def encrypt(self, key, plaintext):
+        result = False
+        req = self.enqueue_encrypt_request(key, plaintext)
+        if req:
+            logger.debug("Encryption response waiting...")
+            response = json.loads(self.encrypt_response())
+            logger.debug(response)
+            result = response[self.result_field]
+        else:
+            logger.error("Encryption request failed")
+        return result
+
+
 if __name__ == '__main__':
-    safe = PasswordSafe(SAFE_FILENAME)
+    safe = PasswordSafe(SAFE_FILENAME, PASSWORD_KEY)
     ui = SafeTextUI(safe)
-    safe.print_all_credentials()
+    # safe.print_all_credentials()
