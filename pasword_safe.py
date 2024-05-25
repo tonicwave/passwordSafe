@@ -15,7 +15,7 @@ import json
 
 # global logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.DEBUG)
 handler = logging.StreamHandler()
 formatter = logging.Formatter('%(message)s')
 handler.setFormatter(formatter)
@@ -42,17 +42,17 @@ PASSWORD_KEY = "n5_lbuaAWGhe9gdv7MA5n0ZDhpZaDUtiuoHiZYXhxa0="
 
 
 class Credentials:
-    def __init__(self, nickname=None, username=None, password=None, seed=None, website=None):
+    def __init__(self, nickname=None, username=None, password=None, website=None, password_key=None, totp=None):
         self.nickname = nickname
         self.username = username
-        self.password = password
-        self.totp = None
+        self.totp = totp
         self.website = website
         self.notes = None
         self.username_history = {}
         self.password_history = {}
         self.website_history = {}
         self.notes_history = {}
+        self.set_password(password_key, password)
 
     def set_nickname(self, nickname):
         self.nickname = nickname
@@ -91,6 +91,8 @@ class Credentials:
         self.totp = self.seed_totp(new_seed)
 
     def get_totp(self):
+        if self.totp is None:
+            return "No one-time password configured yet."
         totp = TotpRequestor()
         return totp.get_totp(self.username, self.nickname)
 
@@ -240,12 +242,17 @@ class SafeTextUI:
 
     def print_help(self):
         print('HELP DOCUMENTATION\n\t'
-              'Do not fret.\n\tpasswordSafe keeps each of your account''s information in a set of credentials.\n\t'
+              'Do not fret. To Quit (q) type "q" and press <Enter>\n\tpasswordSafe keeps '
+              'each of your account''s information in a set of credentials.\n\t'
               'If you have never entered any credentials before, start with New (n) which lets\n\t'
               'you save a new set of credentials.\n\n\t'
               'If you need to change a password for existing credentials you have previously saved\n\t'
               'you can choose Update (u) to lookup your credentials by their nickname and then\n\t'
               'provide the new password.\n\n\t'
+              'If you want to use time-based one-time passwords in an account, type S to seed the\n\t'
+              'one-time password system for the account.\n\n\t'
+              'To look up a password and Display it, you can choose Display (d) which shows you the\n\t'
+              'nickname, username, password, website URL, and possibly the one-time password, if you seeded it.\n\n\t'
               'Sometimes you have information that you want to to include with credentials, like\n\t'
               'your numeric account number. You can Add a note (a) that includes such details.\n\t')
 
@@ -268,7 +275,7 @@ class SafeTextUI:
         if creds is None:
             print(NOT_FOUND_PROMPT)
         else:
-            print('\nNICKNAME\tWEBSITE\t\t\t\tUSERNAME\t\t\tPASSWORD\t\tONE-TIME PASSWORD')
+            print('\nNICKNAME\tWEBSITE\t\t\t\tUSERNAME\t\t\tPASSWORD\t\t\tONE-TIME PASSWORD')
             self.passwordSafe.print_credential(creds)
             print('\n')
 
@@ -276,7 +283,8 @@ class SafeTextUI:
         self.passwordSafe.add_credential(Credentials(self.read_input(NICKNAME_PROMPT),
                                                      self.read_input(USERNAME_PROMPT),
                                                      self.read_input(PASSWORD_PROMPT),
-                                                     self.read_input(WEBSITE_PROMPT)))
+                                                     self.read_input(WEBSITE_PROMPT),
+                                                     self.passwordSafe.password_key))
         print(CREDENTIALS_SAVED)
 
     def store_new_totp_seed(self):
@@ -290,7 +298,7 @@ class SafeTextUI:
             print(CREDENTIALS_SAVED)
 
     def add_notes(self):
-        credential = self.lookup_account(NOTES_PROMPT)
+        credential = self.lookup_account(LOOKUP_PROMPT)
         if credential is None:
             print(NOT_FOUND_PROMPT)
         else:
@@ -423,6 +431,7 @@ class Authenticator(RedisQue):
         return result != -1
 
 
+
 class Decryptor(RedisQue):
     def __init__(self):
         super().__init__()
@@ -431,12 +440,12 @@ class Decryptor(RedisQue):
         self.result_field = "plaintext"
 
     def enqueue_decrypt_request(self, key: str, ciphertext: str) -> bool:
-        """Send a username and password to the queue
+        """Send a key and ciphertext to the queue
 
         look for a response of true if the request gets queued successfully
 
         message should be in the form:
-        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        {"key": "some-key", "ciphertext": ";123l45j08asdfasdf"}
         """
 
         query = {"key": key, "ciphertext": ciphertext}
@@ -473,12 +482,12 @@ class Encryptor(RedisQue):
         self.result_field = "ciphertext"
 
     def enqueue_encrypt_request(self, key: str, plaintext: str) -> bool:
-        """Send a username and password to the queue
+        """Send a key and plaintext to the queue
 
         look for a response of true if the request gets queued successfully
 
         message should be in the form:
-        {"username": "some-username", "password": "s0m3P@ssw0rD"}
+        {"key": "some-key", "plaintext": "some_plaintext"}
         """
 
         query = {"key": key, "plaintext": plaintext}
@@ -510,3 +519,4 @@ if __name__ == '__main__':
     safe = PasswordSafe(SAFE_FILENAME, PASSWORD_KEY)
     ui = SafeTextUI(safe)
     # safe.print_all_credentials()
+s
